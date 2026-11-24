@@ -5,6 +5,13 @@ paths:
   cache_dir: null             # default: {project_root_dir}/cache/casas
   local_dir: /content/casas_local   # fast local disk for extracted files (not Drive)
 
+# Where the data comes from:
+#   folders: already unzipped under {dataset_folder}: data/, labeled_data/, floorplans/ (searched up to 3 levels deep)
+#   zips:    data.zip, labeled_data.zip, floorplans.zip in {dataset_folder} (downloaded if missing and zenodo.download)
+#   auto:    folders if a data/ folder is found, else zips
+source: auto
+folders: {data: data, labeled: labeled_data, floorplans: floorplans}
+
 # Zenodo record 15708568: CASAS free-living, mapped sensor names (CC BY 4.0)
 zenodo:
   record: "15708568"
@@ -12,7 +19,7 @@ zenodo:
     data.zip: 973a4ec0b67269566227ce8a5a3a9e21
     floorplans.zip: f108101628fa24fae6ff8687c6d98d68
     labeled_data.zip: ec37d679e85a6ae39e84994888afd514
-  download: true              # download into {dataset_folder} if missing or md5 differs
+  download: true              # zips mode only: download into {dataset_folder} if missing or md5 differs
   verify_md5: true
 
 inventory:

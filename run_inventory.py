@@ -47,6 +47,40 @@ def describe_record(meta_path, out):
     return text
 
 
+def find_dir(root, name, depth=3):
+    """First folder called `name` (case-insensitive) under root, breadth-first, at most `depth` levels down."""
+    level = [Path(root)]
+    for _ in range(depth + 1):
+        nxt = []
+        for d in level:
+            if d.name.lower() == name.lower() and d != Path(root):
+                return d
+            try:
+                nxt += sorted(p for p in d.iterdir() if p.is_dir() and not p.name.startswith((".", "__MACOSX")))
+            except PermissionError:
+                pass
+        level = nxt
+    return None
+
+
+def locate(cfg):
+    """{'data.zip'|'labeled_data.zip'|'floorplans.zip': path to the folder or the zip}. Folders win in 'auto'."""
+    mode = cfg["source"]
+    root = Path(cfg["dataset_folder"])
+    if mode in ("auto", "folders"):
+        f = cfg["folders"]
+        dirs = {k: find_dir(root, f[k]) for k in ("data", "labeled", "floorplans")}
+        if dirs["data"] is not None:
+            log.info("using unzipped folders (no download): %s", ", ".join(f"{k}={v}" for k, v in dirs.items()))
+            download.fetch_metadata(cfg)
+            return {n: dirs[k] for n, k in (("data.zip", "data"), ("labeled_data.zip", "labeled"), ("floorplans.zip", "floorplans"))
+                    if dirs[k] is not None}
+        if mode == "folders":
+            raise FileNotFoundError(f"no folder named '{f['data']}' under {root} (searched 3 levels deep)")
+        log.info("no '%s' folder under %s: falling back to zips", f["data"], root)
+    return download.fetch(cfg)
+
+
 def candidates(H, cfg):
     s = cfg["selection"]
     c = H.copy()
@@ -70,7 +104,7 @@ def main(argv=None):
     Path(cfg["paths"]["local_dir"]).mkdir(parents=True, exist_ok=True)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S",
                         handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler(out / "run.log", mode="a")])
-    files = download.fetch(cfg)
+    files = locate(cfg)
     desc = describe_record(Path(cfg["dataset_folder"]) / f"zenodo_{cfg['zenodo']['record']}.json", out)
 
     H, S, D, G, other = inventory.run(files["data.zip"], cfg, "data")
@@ -93,7 +127,9 @@ def main(argv=None):
     L = []
     w = L.append
     w("# CASAS free-living: inventory (step 1)\n")
-    w(f"Record {cfg['zenodo']['record']}; files: " + ", ".join(f"`{k}`" for k in files) + " (md5 verified)." if cfg["zenodo"]["verify_md5"] else "")
+    folder_mode = any(Path(p).is_dir() for p in files.values())
+    w(f"Record {cfg['zenodo']['record']}. Source: " + ", ".join(f"`{p}`" for p in files.values())
+      + (" (unzipped folders; md5 not checked)" if folder_mode else (" (md5 verified)" if cfg["zenodo"]["verify_md5"] else "")) + ".")
     w(f"\n**{len(H)} home files**, {int(H.lines.sum()):,} lines, {int(H.bad_lines.sum()):,} unparsable "
       f"({H.bad_share.max():.2%} worst home), {int(H.duplicate_home_id.sum())} files sharing a home id.\n")
     if other:

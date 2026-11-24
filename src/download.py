@@ -17,13 +17,11 @@ def md5sum(p, chunk=1 << 22):
     return h.hexdigest()
 
 
-def fetch(cfg):
-    """Returns {file name: local path}. Never re-downloads a file whose md5 already matches."""
+def fetch_metadata(cfg):
+    """Record metadata (its description holds the home/resident table). Small; failure is only a warning."""
     import requests
     z = cfg["zenodo"]
     root = Path(cfg["dataset_folder"])
-    root.mkdir(parents=True, exist_ok=True)
-    out = {}
     meta = root / f"zenodo_{z['record']}.json"
     if not meta.exists():
         try:
@@ -33,6 +31,16 @@ def fetch(cfg):
             log.info("saved record metadata -> %s", meta)
         except Exception as e:  # metadata is useful (home table) but not required
             log.warning("could not fetch record metadata: %s", e)
+
+
+def fetch(cfg):
+    """Returns {file name: local path}. Never re-downloads a file whose md5 already matches."""
+    import requests
+    z = cfg["zenodo"]
+    root = Path(cfg["dataset_folder"])
+    root.mkdir(parents=True, exist_ok=True)
+    out = {}
+    fetch_metadata(cfg)
     for name, md5 in z["files"].items():
         p = root / name
         ok = p.exists() and (not z["verify_md5"] or md5sum(p) == md5)

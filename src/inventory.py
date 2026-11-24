@@ -67,6 +67,33 @@ def sources(zip_path, extract_dir):
     return out, other
 
 
+def sources_dir(root, extract_dir):
+    """Same as `sources`, for an already unzipped folder (walked recursively)."""
+    out, other = [], []
+    for dirpath, _, files in os.walk(root):
+        for f in sorted(files):
+            fp = os.path.join(dirpath, f)
+            if _skip(fp):
+                continue
+            suf = PurePosixPath(f).suffix.lower()
+            if suf in ARCHIVES:
+                dest = os.path.join(extract_dir, PurePosixPath(f).stem)
+                if not os.path.isdir(dest):
+                    os.makedirs(dest, exist_ok=True)
+                    with zipfile.ZipFile(fp) as inner:
+                        inner.extractall(dest)
+                for r2, _, f2 in os.walk(dest):
+                    for g in f2:
+                        gp = os.path.join(r2, g)
+                        if not _skip(gp) and PurePosixPath(g).suffix.lower() in DATA_EXT + COMPRESSED:
+                            out.append(("file", gp, gp, os.path.getsize(gp)))
+            elif suf in DATA_EXT + COMPRESSED:
+                out.append(("file", fp, fp, os.path.getsize(fp)))
+            else:
+                other.append(os.path.relpath(fp, root))
+    return out, other
+
+
 def open_source(kind, container, member):
     if kind == "zip":
         z = zipfile.ZipFile(container)
@@ -204,7 +231,8 @@ def profile_member(args):
 
 
 def run(zip_path, cfg, tag):
-    src, other = sources(zip_path, os.path.join(cfg["paths"]["local_dir"], tag))
+    ex_dir = os.path.join(cfg["paths"]["local_dir"], tag)
+    src, other = (sources_dir(zip_path, ex_dir) if os.path.isdir(zip_path) else sources(zip_path, ex_dir))
     log.info("%s: %d data files, %d other files%s", tag, len(src), len(other), (": " + ", ".join(other[:10])) if other else "")
     jobs = [(k, c, m, cfg) for k, c, m, _ in sorted(src, key=lambda x: -x[3])]   # biggest first
     workers = cfg["inventory"]["workers"] or os.cpu_count() or 2
@@ -223,5 +251,9 @@ def run(zip_path, cfg, tag):
 
 
 def list_zip(zip_path):
+    if os.path.isdir(zip_path):
+        rows = [dict(name=os.path.relpath(os.path.join(d, f), zip_path), bytes=os.path.getsize(os.path.join(d, f)))
+                for d, _, fs in os.walk(zip_path) for f in sorted(fs) if not _skip(os.path.join(d, f))]
+        return pd.DataFrame(rows, columns=["name", "bytes"])
     with zipfile.ZipFile(zip_path) as z:
         return pd.DataFrame([dict(name=i.filename, bytes=i.file_size) for i in z.infolist() if not i.is_dir()])
