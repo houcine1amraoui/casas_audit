@@ -1,0 +1,29 @@
+run_name: casas_inventory
+
+paths:
+  output_dir: null            # default: {project_root_dir}/outputs/{run_name}
+  cache_dir: null             # default: {project_root_dir}/cache/casas
+  local_dir: /content/casas_local   # fast local disk for extracted files (not Drive)
+
+# Zenodo record 15708568: CASAS free-living, mapped sensor names (CC BY 4.0)
+zenodo:
+  record: "15708568"
+  files:
+    data.zip: 973a4ec0b67269566227ce8a5a3a9e21
+    floorplans.zip: f108101628fa24fae6ff8687c6d98d68
+    labeled_data.zip: ec37d679e85a6ae39e84994888afd514
+  download: true              # download into {dataset_folder} if missing or md5 differs
+  verify_md5: true
+
+inventory:
+  workers: 0                  # 0 = number of CPUs
+  max_bad_examples: 5         # unparsable lines kept per home
+  gap_hours: [1, 6, 24, 72]   # event-free gaps counted per home
+  active_day_min_events: 50   # a day with fewer events counts as inactive (sensor or home down)
+  top_messages: 8
+
+selection:                    # candidate rule (proposal only; nothing is dropped at this stage)
+  min_active_days: 56         # 8 weeks
+  min_run_days: 28            # longest run of consecutive active days
+  min_sensors: 10
+  min_rooms_with_2plus: 3     # rooms with >= 2 sensors (room = name with Area / trailing letter / suffix removed)
