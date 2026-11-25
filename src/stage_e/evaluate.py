@@ -11,6 +11,7 @@ Results are written per (home, model, seed) as JSON, so an interrupted run resum
 """
 import json
 import logging
+import re
 from itertools import combinations
 from pathlib import Path
 
@@ -50,6 +51,26 @@ def calibrate(s, hours, st, bin_h):
     gm, gs = np.median([v[0] for v in st.values()]), np.median([v[1] for v in st.values()])
     med, sc = np.where(np.isnan(med), gm, med), np.where(np.isnan(sc), gs, sc)
     return (s - med) / sc
+
+
+def activity(a):
+    """Mean standardised activity of a window over its observed channels and steps (comparable across channel masks)."""
+    cnt = a["mr"].sum((1, 2))
+    with np.errstate(all="ignore"):
+        return np.where(cnt > 0, (a["xr"] * a["mr"]).sum((1, 2)) / cnt, np.nan)
+
+
+def deployment(home):
+    return re.match(r"[a-z]+", home).group(0)
+
+
+def masked(a, mk, Z):
+    """Copy of window arrays with the channels outside mask `mk` unobserved (as in an impostor mapped onto this home)."""
+    b = dict(a)
+    b["Zsrc"] = (a.get("Zsrc", Z) * mk).astype(np.float32)
+    for k in ("x", "y", "xr", "m", "ym", "mr"):
+        b[k] = (b[k] * mk).astype(np.float32)
+    return b
 
 
 def _auc(y, s):
@@ -97,13 +118,21 @@ def run_home(target, others, cfg, out_dir):
         return []
     inj_val, inj_test = injected(target, cfg, "val", 1000), injected(target, cfg, "test", 0)
     rng = np.random.default_rng(e["impostor"]["seed"])
-    imps, cover = {}, {}
+    imps, cover, masks = {}, {}, {}
     for o in others:
         a, share = data.impostor_arrays(target, o, cfg, rng)
         cover[o["home"]] = share
         if a is not None:
             imps[o["home"]] = a
+            masks[o["home"]] = data.align_map(target, o)[0] >= 0
+    # own test windows with each impostor's channel mask (layout control: same channels on both sides)
+    mkeys = {oh: mk.tobytes() for oh, mk in masks.items()}
+    own_masked = {kb: masked(arr["test"], masks[oh], target["Z"]) for oh, kb in mkeys.items() if not masks[oh].all()}
+    use_def = bool(e["score"].get("deficit", False))
     combos = [(g, int(k), cal) for g in e["score"]["channel_agg"] for k in e["score"]["smooth_steps"] for cal in e["score"]["calibration"]]
+    if e["score"].get("deficit", False):   # + model-free activity deficit for this hour (catches inactivity)
+        combos += [(g, int(k), "hour+deficit") for g in e["score"]["channel_agg"] for k in e["score"]["smooth_steps"]]
+    act_val = activity(arr["val"])
     bin_h = int(e["score"]["calibration_bin_hours"])
     hrs = {s: target["times"][arr[s]["t"]].hour.values for s in ("val", "test")}
     rows = []
@@ -136,12 +165,17 @@ def run_home(target, others, cfg, out_dir):
 
             cstats = {}
 
-            def S(Zm, t, g, k, cal="none", hours=None):
+            def S(Zm, t, g, k, cal="none", hours=None, a=None):
                 s = train.smooth(train.aggregate(Zm, g), t, k)
-                if cal == "hour":
+                if cal.startswith("hour"):
                     if (g, k) not in cstats:       # fitted on the clean val windows of this model, aggregation and smoothing
                         cstats[(g, k)] = calib_stats(train.smooth(train.aggregate(Zv, g), arr["val"]["t"], k), hrs["val"], bin_h)
                     s = calibrate(s, hours, cstats[(g, k)], bin_h)
+                if cal == "hour+deficit":
+                    if ("def", k) not in cstats:
+                        cstats[("def", k)] = calib_stats(train.smooth(-act_val, arr["val"]["t"], k), hrs["val"], bin_h)
+                    d = calibrate(train.smooth(-activity(a), t, k), hours, cstats[("def", k)], bin_h)
+                    s = np.fmax(s, d)
                 return s
 
             def inj_auc(inj, tag, g, k, cal):
@@ -149,43 +183,72 @@ def run_home(target, others, cfg, out_dir):
                 for typ, (a, segs) in inj.items():
                     lab = inject.labels_for(a["t"], segs, h + w - 1 + k - 1)
                     keep = lab >= 0
-                    v.append(_auc(lab[keep] == 1, S(Zi[(tag, typ)], a["t"], g, k, cal, target["times"][a["t"]].hour.values)[keep]))
+                    v.append(_auc(lab[keep] == 1, S(Zi[(tag, typ)], a["t"], g, k, cal, target["times"][a["t"]].hour.values, a)[keep]))
                 return v
 
-            best = None
-            grid = {}
+            grid, grid_t = {}, {}
             for g, k, cal in combos:
-                v = np.nanmean(inj_auc(inj_val, "val", g, k, cal)) if inj_val else np.nan
-                grid[f"{g}/k{k}/{cal}"] = float(v)
-                key = v if e["score"]["select"] == "val_injected" else float([g, k, cal] == list(e["score"]["default"]))
-                if best is None or np.nan_to_num(key, nan=-1) > best[0] + 1e-9:
-                    best = (np.nan_to_num(key, nan=-1), g, k, cal)
-            _, g, k, cal = best
+                v = inj_auc(inj_val, "val", g, k, cal) if inj_val else []
+                grid[f"{g}/k{k}/{cal}"] = float(np.nanmean(v)) if len(v) else np.nan
+                grid_t[(g, k, cal)] = dict(zip(inj_val, v))
+
+            def pick(pred, key=lambda c: grid[f"{c[0]}/k{c[1]}/{c[2]}"]):
+                cand = [c for c in combos if pred(c)]
+                if e["score"]["select"] != "val_injected":
+                    return next((c for c in cand if list(c) == list(e["score"]["default"])), cand[0])
+                return max(cand, key=lambda c: np.nan_to_num(key(c), nan=-1)) if cand else None
+
+            g, k, cal = pick(lambda c: True)                       # overall (may use the activity deficit)
+            gm, km, calm = pick(lambda c: c[2] != "hour+deficit")  # model-only score: used for cross-user
             r["score_agg"], r["score_smooth"], r["score_calibration"] = g, k, cal
+            r["score_model_only"] = f"{gm}/k{km}/{calm}"
             r["val_inj_grid"] = grid
-            # the same model with the uncalibrated / hour-calibrated score, each with its own best agg+smoothing on val
-            for c_ in e["score"]["calibration"]:
-                sub = [(kk, vv) for kk, vv in grid.items() if kk.endswith("/" + c_)]
-                if sub:
-                    bk = max(sub, key=lambda x: np.nan_to_num(x[1], nan=-1))[0].split("/")
-                    gg, kk_ = bk[0], int(bk[1][1:])
-                    r[f"inj_mean_auroc_{c_}"] = float(np.nanmean(inj_auc(inj_test, "test", gg, kk_, c_))) if inj_test else np.nan
+            # each calibration variant with its own best agg+smoothing on val
+            for c_ in sorted({c[2] for c in combos}):
+                bc = pick(lambda c: c[2] == c_)
+                if bc:
+                    r[f"inj_mean_auroc_{c_.replace('+', '_')}"] = float(np.nanmean(inj_auc(inj_test, "test", *bc))) if inj_test else np.nan
             for typ, v in zip(inj_test, inj_auc(inj_test, "test", g, k, cal)):
                 r[f"inj_{typ}_auroc"] = v
+            for typ, v in zip(inj_test, inj_auc(inj_test, "test", gm, km, calm)):
+                r[f"inj_{typ}_auroc_model"] = v
+            # per anomaly type: settings chosen on val for that type alone
+            for typ in inj_test:
+                bc = pick(lambda c: True, key=lambda c: grid_t[c].get(typ, np.nan))
+                v = inj_auc({typ: inj_test[typ]}, "test", *bc)
+                r[f"inj_{typ}_auroc_typebest"], r[f"inj_{typ}_typebest_setting"] = v[0], f"{bc[0]}/k{bc[1]}/{bc[2]}"
             r["inj_mean_auroc"] = float(np.nanmean([r[f"inj_{t}_auroc"] for t in inj_test])) if inj_test else np.nan
-            # cross-user: day scores
-            dv = day_scores(S(Zv, arr["val"]["t"], g, k, cal, hrs["val"]), target["times"][arr["val"]["t"]].normalize())
-            dt = day_scores(S(Zt, arr["test"]["t"], g, k, cal, hrs["test"]), target["times"][arr["test"]["t"]].normalize())
-            di = [day_scores(S(Zimp[oh], a["t"], g, k, cal, a["hour"]), a["day"]) for oh, a in imps.items()]
-            di = pd.concat(di) if di else pd.Series(dtype=float)
+            r["inj_mean_auroc_model"] = float(np.nanmean([r[f"inj_{t}_auroc_model"] for t in inj_test])) if inj_test else np.nan
+            r["inj_mean_auroc_typebest"] = float(np.nanmean([r[f"inj_{t}_auroc_typebest"] for t in inj_test])) if inj_test else np.nan
+            # cross-user: day scores with the model-only score
+            g_, k_, c_ = gm, km, calm
+            dv = day_scores(S(Zv, arr["val"]["t"], g_, k_, c_, hrs["val"], arr["val"]), target["times"][arr["val"]["t"]].normalize())
+            dt = day_scores(S(Zt, arr["test"]["t"], g_, k_, c_, hrs["test"], arr["test"]), target["times"][arr["test"]["t"]].normalize())
+            dimp = {oh: day_scores(S(Zimp[oh], a["t"], g_, k_, c_, a["hour"], a), a["day"]) for oh, a in imps.items()}
+            di = pd.concat(list(dimp.values())) if dimp else pd.Series(dtype=float)
             r["impostor_homes"], r["impostor_days"] = len(imps), int(len(di))
             r["impostor_matched_share_mean"] = float(np.mean([cover[o] for o in imps])) if imps else np.nan
             r["cross_user_day_auroc"] = _auc(np.r_[np.zeros(len(dt)), np.ones(len(di))], np.r_[dt.values, di.values])
             thr = float(np.quantile(dv.values, e["day_threshold_quantile"])) if len(dv) else np.nan
             r["own_test_day_flag_rate"] = float((dt.values > thr).mean()) if len(dt) else np.nan
             r["impostor_day_flag_rate"] = float((di.values > thr).mean()) if len(di) else np.nan
-            per_imp = {oh: _auc(np.r_[np.zeros(len(dt)), np.ones(len(d))], np.r_[dt.values, d.values])
-                       for oh, d in zip(imps, [day_scores(S(Zimp[oh], a["t"], g, k, cal, a["hour"]), a["day"]) for oh, a in imps.items()])}
+            if use_def:                                               # cross-user with the overall setting, for reference
+                dt2 = day_scores(S(Zt, arr["test"]["t"], g, k, cal, hrs["test"], arr["test"]), target["times"][arr["test"]["t"]].normalize())
+                di2 = pd.concat([day_scores(S(Zimp[oh], a["t"], g, k, cal, a["hour"], a), a["day"]) for oh, a in imps.items()]) if imps else pd.Series(dtype=float)
+                r["cross_user_day_auroc_overall_setting"] = _auc(np.r_[np.zeros(len(dt2)), np.ones(len(di2))], np.r_[dt2.values, di2.values])
+            # layout controls, per impostor home: own test days scored with the impostor's channel mask
+            dt_m = {}
+            for kb, am in own_masked.items():
+                Em = train.errors(m, am, target)[0]
+                dt_m[kb] = day_scores(S(train.score(Em, med, iqr)[1], am["t"], g_, k_, c_, hrs["test"], am),
+                                      target["times"][am["t"]].normalize())
+            per_imp = {}
+            for oh, d in dimp.items():
+                own = dt_m.get(mkeys[oh], dt)
+                per_imp[oh] = dict(
+                    auc=_auc(np.r_[np.zeros(len(dt)), np.ones(len(d))], np.r_[dt.values, d.values]),
+                    auc_masked=_auc(np.r_[np.zeros(len(own)), np.ones(len(d))], np.r_[own.values, d.values]),
+                    share=float(cover[oh]), same_deployment=deployment(oh) == deployment(home))
             r["cross_user_auroc_by_impostor"] = per_imp
             if isinstance(m, models.GDN) and m.graph == "learned":
                 A = m.neighbours()
@@ -193,9 +256,9 @@ def run_home(target, others, cfg, out_dir):
                 r["graph_edges"] = A.astype(int).tolist()
             f.write_text(json.dumps(r, default=float))
             rows.append(r)
-            log.info("  %-7s %-16s s%d mse val/test %.3f/%.3f inj %.3f (none %.3f, hour %.3f) cross-user %.3f (%d homes) %s/k%d/%s %.0fs",
-                     home, name, seed, r["val_mse"], r["test_mse"], r["inj_mean_auroc"], r.get("inj_mean_auroc_none", np.nan),
-                     r.get("inj_mean_auroc_hour", np.nan), r["cross_user_day_auroc"], len(imps), g, k, cal, r["train_s"])
+            log.info("  %-7s %-16s s%d ep %d mse val/test %.3f/%.3f inj %.3f (model-only %.3f, per-type %.3f) cross-user %.3f (%d homes) %s/k%d/%s %.0fs",
+                     home, name, seed, r["epochs"], r["val_mse"], r["test_mse"], r["inj_mean_auroc"], r["inj_mean_auroc_model"],
+                     r["inj_mean_auroc_typebest"], r["cross_user_day_auroc"], len(imps), g, k, cal, r["train_s"])
     return rows
 
 

@@ -63,7 +63,7 @@ audit:
 
 # ---------------- Stage E: preliminary models on the audited homes (run_stage_e)
 stage_e:
-  run_name: casas_stage_e_v2   # v2: hour-of-day score calibration + hierarchical autoencoder (v1 results stay in casas_stage_e)
+  run_name: casas_stage_e_v3   # v3: activity-deficit score, per-type injected results, layout controls, 100 epochs (v1/v2 kept)
   homes: null                 # null = every audited home with enough clean days; or a list, e.g. [tm008, ihs108]
   force: false                # recompute results that already exist (runs/<home>/<model>_s<seed>.json)
   window_steps: 12            # 2 h of 10-min steps as input
@@ -79,12 +79,13 @@ stage_e:
   var_lambdas: [0.001, 0.01, 0.1, 1.0, 10.0]
   hp: {hidden: 64, layers: 1, dropout: 0.0, latent: 32, emb_dim: 32, topk: 5, room_dim: 8}
   #   hae: home code = latent (32), one room code of room_dim (8) per room; hae_flat: one shared code of room_dim x n_rooms
-  train: {lr: 0.001, weight_decay: 0.0, batch_size: 256, max_epochs: 40, patience: 6, grad_clip: 1.0}
+  train: {lr: 0.001, weight_decay: 0.0, batch_size: 256, max_epochs: 100, patience: 6, grad_clip: 1.0}
   score:
     channel_agg: [max, mean, top3]
     smooth_steps: [1, 6, 12]
     calibration: [none, hour]   # hour: window score relative to the val windows of the same time of day
     calibration_bin_hours: 2
+    deficit: true             # also try max(model score, activity deficit for this hour), both calibrated per hour on val
     select: val_injected
     default: [mean, 6, hour]
   score_scale_floor: 0.05

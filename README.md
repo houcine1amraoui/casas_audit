@@ -52,8 +52,13 @@ models persistence, seasonal naive, ridge VAR, LSTM, LSTM autoencoder, hierarchi
 home codes; controls `hae_random` with sensors assigned to random rooms of the same sizes and `hae_flat` with a single
 room of the same total code size), GDN without graph, GDN, GDN + room hierarchy, GDN + randomly assigned rooms. Score
 settings (channel aggregation, smoothing, and calibration `none` or `hour` = scores standardised per 2-hour bin of the
-day using clean val windows) are chosen on anomalies injected into val. Evaluation on held-out data: forecast error, injected anomalies in test, and the cross-user
+day using clean val windows, or `hour+deficit` = the larger of that and a model-free activity deficit for the hour,
+which catches inactivity that error scores miss) are chosen on anomalies injected into val. Injected anomalies are
+also reported per type with the setting chosen on val for that type alone, and with the model error score only.
+Cross-user AUROC uses the model-only score. Layout controls (report section 3b): per impostor home, own days scored
+with the impostor's channel mask; subsets of impostors that match >= 90% / 100% of the home's sensors and of the
+same deployment. Evaluation on held-out data: forecast error, injected anomalies in test, and the cross-user
 test: the home's model scores its own test days and other homes' test days mapped onto its sensors by name; AUROC per
 home. Flat vs hierarchical is compared per home (seeds averaged) with bootstrap CIs and Wilcoxon tests over homes.
-Results are saved per (home, model, seed) under `outputs/<run_name>/runs/` (v2 run: `outputs/casas_stage_e_v2/`; v1 results stay in `outputs/casas_stage_e/`), so a run can be stopped and resumed, or
+Results are saved per (home, model, seed) under `outputs/<run_name>/runs/` (v3 run: `outputs/casas_stage_e_v3/`; v1/v2 results stay in their folders), so a run can be stopped and resumed, or
 split with `--set "stage_e.homes=[...]"`; `--report_only` rebuilds the report. `--quick` = smoke test.

@@ -65,7 +65,10 @@ def main(argv=None):
                         handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler(out / "run.log", mode="a")])
     if not (root / "casas_selection" / "homes_selection.csv").exists() or not (root / "casas_selection" / "sensor_map.csv").exists():
         if not (root / cfg["run_name"] / "homes.csv").exists():
-            raise SystemExit(f"step-1 inventory not found in {root / cfg['run_name']}: run run_inventory first")
+            log.info("step-1 inventory not found in %s: running run_inventory first (no download)", root / cfg["run_name"])
+            import run_inventory
+            run_inventory.main(["--project_root_dir", a.project_root_dir, "--dataset_folder", a.dataset_folder]
+                               + (["--config", a.config] if a.config else []) + [x for s in a.set for x in ("--set", s)])
         log.info("step-2 selection not found: running run_select first")
         import run_select
         run_select.main(["--project_root_dir", a.project_root_dir] + (["--config", a.config] if a.config else [])
