@@ -205,7 +205,7 @@ def main(argv=None):
     w(md(pd.concat([SF.cls.value_counts().rename("full_window"), S.cls.value_counts().rename("clean_window")], axis=1).fillna(0).astype(int)
          .rename_axis("cls").reset_index()))
     w(f"Classes: `silent_in_window` (no activation in the window), `rare` (median < {A['classify']['rare_median_daily']}/day, kept), "
-      f"`stuck` (ON held >= {A['stuck_hours']} h for > {A['classify']['stuck_time_share']:.0%} of the time), `long_dropout` "
+      f"`partial_presence` (first activation > {A['classify']['partial_days']} days after the window starts or last one > {A['classify']['partial_days']} days before it ends: installed, renamed or removed), `stuck` (ON held >= {A['stuck_hours']} h for > {A['classify']['stuck_time_share']:.0%} of the time), `long_dropout` "
       f"(silent >= {A['classify']['dropout_run_days']} active days in a row), `intermittent` (silent on > {A['classify']['dropout_share']:.0%} "
       "of active days), `chatter`. Usable = ok + rare.\n\n")
     bad = S[~S.usable].sort_values(["home", "cls"])[["home", "stream", "room_type", "cls", "cls_full_window", "activations", "median_daily",
@@ -293,7 +293,10 @@ def figures(fd, res, homes, HS, IT, IH, Dmats, LT, cohort, A):
             fig, ax = plt.subplots(figsize=(12, 0.2 * len(names) + 1.5))
             ax.imshow(np.log1p(mat), aspect="auto", cmap="viridis", interpolation="nearest")
             ax.set_yticks(range(len(names))); ax.set_yticklabels([f"{n} [{c}]" for n, c in zip(names, s.cls)], fontsize=5)
-            ax.set_title(f"{h}: activations per sensor and day (log); [class]"); ax.set_xlabel("day in window")
+            cm = np.flatnonzero(r["active_mask"])
+            if len(cm):
+                ax.axvspan(cm[0] - .5, cm[-1] + .5, fill=False, edgecolor="red", lw=1.2)
+            ax.set_title(f"{h}: activations per sensor and day (log); [class in clean window]; red box = clean window"); ax.set_xlabel("day in stable window")
             fig.tight_layout(); fig.savefig(fd / "homes" / f"{h}.png", dpi=100); plt.close(fig)
         figs.append("homes/<home>.png")
     return figs

@@ -46,7 +46,8 @@ audit:
   silence_hours: 12           # event-free stretches reported (absence if a door/entry event precedes it)
   stuck_hours: 2              # motion ON held this long = stuck cycle
   dropout_min_median: 5       # a sensor-day counts as dropout if the sensor is silent on an active day but usually fires >= 5/day
-  classify: {rare_median_daily: 1, stuck_time_share: 0.05, dropout_run_days: 7, dropout_share: 0.2, chatter_daily: 20000}
+  classify: {rare_median_daily: 1, stuck_time_share: 0.05, dropout_run_days: 7, dropout_share: 0.2, chatter_daily: 20000,
+             partial_days: 14}        # first activation > 14 days after the window starts, or last > 14 days before it ends
   clean:                      # clean sub-window inside the stable window (features + tests use only these days)
     min_alive_share: 0.9      # a clean day: active, and >= 90% of the core motion sensors fire
     gap_tolerance: 2          # up to 2 bad days in a row are bridged (but not used)

@@ -85,7 +85,11 @@ def stream_stats(ev, on, streams, day_sel, active, cfg, home, room, roomid, smap
         paired[ok] = aa[nxt[ok]] == 0
         dur = tt[nxt[paired]] - tt[on_idx[paired]] if paired.any() else np.array([])
         stuck = dur >= a["stuck_hours"] * 3600
-        rows.append(dict(home=home, stream=s, base=e.base.iat[0], room_type=e.room_type.iat[0], group=e.group.iat[0],
+        sel_days = np.flatnonzero(day_sel)
+        fired = sel_days[per_day[sel_days] > 0]
+        late_start = int(fired[0] - sel_days[0]) if len(fired) else 0          # days from window start to first activation
+        early_stop = int(sel_days[-1] - fired[-1]) if len(fired) else 0
+        rows.append(dict(home=home, stream=s, late_start_days=late_start, early_stop_days=early_stop, base=e.base.iat[0], room_type=e.room_type.iat[0], group=e.group.iat[0],
                          room=roomid.get(e.base.iat[0], "Other"), is_door=s.endswith("#door"),
                          activations=int(len(o)), releases=int((e.act == 0).sum()),
                          unpaired_on_share=float(1 - paired.mean()) if len(on_idx) else np.nan,
@@ -108,6 +112,8 @@ def stream_stats(ev, on, streams, day_sel, active, cfg, home, room, roomid, smap
     for r in S.itertuples():
         if r.activations == 0:
             k = "silent_in_window"
+        elif max(getattr(r, "late_start_days", 0) or 0, getattr(r, "early_stop_days", 0) or 0) > c["partial_days"]:
+            k = "partial_presence"      # installed, renamed or removed inside the window: a step change, not behaviour
         elif r.median_daily < c["rare_median_daily"]:
             k = "rare"
         elif (not r.is_door) and (r.stuck_time_share or 0) > c["stuck_time_share"]:   # a door may stay open: not a fault

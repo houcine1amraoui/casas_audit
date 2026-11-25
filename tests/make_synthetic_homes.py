@@ -6,6 +6,7 @@ OUT/casas/{data,labeled_data,floorplans}/ + OUT/casas/zenodo_15708568.json (resi
   sh02: kitchen stove sensor dead for days 20-40                      -> long_dropout
   sh03: away 3 days (door, then silence) + 1-day system outage        -> silences, one after a door
   sh04: routine shift (wake 2 h later) from day 45                     -> within-home drift
+        + OfficeAChair installed on day 40                            -> partial_presence
   sh05: labels, marker style (Sleep="begin"/"end")
   sh06: labels, event style (every event labelled); also a duplicate of itself as sh99 (same data)
 """
@@ -58,6 +59,8 @@ def home_events(hid, seed, wake, sleep, kitchen_w, office_w, defects):
             sname = rng.choice(SENS[room])
             if "dead_stove" in defects and sname == "KitchenAStove" and 20 <= d < 40:
                 sname = "KitchenAArea"
+            if "shift" in defects and sname == "OfficeAChair" and d < 40:    # chair sensor installed on day 40
+                sname = "OfficeAArea"
             ev.append((t, sname, "ON")); lab.append((t, {"Kitchen": "Cook", "LivingRoom": "Watch_TV", "Bathroom": "Toilet",
                                                        "Office": "Work_At_Desk", "Transit": "Walk", "Bedroom": "Dress"}[room]))
             dur = rng.uniform(1, 10)
