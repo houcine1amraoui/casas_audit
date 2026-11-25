@@ -232,8 +232,20 @@ def audit_home(home, path, win_start, win_end, smap, cfg):
     if len(o):
         np.add.at(Xh, (o.day.values, o.hour.values), 1)
     tot = Xh.sum(1, keepdims=True)
+    res_min = a["step_minutes"]
+    spd = 1440 // res_min
+    oa = on[on.stream.isin(use)]
+    Xstep = np.zeros((nd * spd, len(use)), np.float32)
+    if len(oa):
+        st = (oa.day.values * spd + ((oa.t.values - start_s) % 86400 // (res_min * 60)).astype(int))
+        np.add.at(Xstep, (st, oa.stream.map(sid).values), 1)
+    meta = S.set_index("stream").loc[use] if use else S.iloc[:0].set_index("stream")
+    sp = dict(zip(smap.sensor, smap.spot))
     D = pd.DataFrame(dict(home=home, day=days, activations=day_act, active=active, clean=clean, usable_activations=tot[:, 0].astype(int)))
     return dict(home=home, days=D, sensors=S, sensors_full=S_full, gaps=pd.DataFrame(gaps), ignored=dict(ignored), backwards=back,
                 n_events=len(ev), clean_info=cinfo, Xs=np.log1p(Xs), Xs_names=[f"{s}@{b * per:02d}h" for s in use for b in range(nb)],
                 Xg_share=Xg / np.maximum(tot, 1), Xh_share=Xh / np.maximum(tot, 1), log_total=np.log1p(tot[:, 0]),
-                active_mask=clean, day_index=days, streams=use, all_streams=streams, Xall=Xall, active_full=active)
+                active_mask=clean, day_index=days, streams=use, all_streams=streams, Xall=Xall, active_full=active,
+                Xstep=Xstep, step_minutes=res_min, stream_room_type=meta.room_type.astype(str).tolist() if use else [],
+                stream_room=meta.room.astype(str).tolist() if use else [], stream_group=meta.group.astype(str).tolist() if use else [],
+                stream_spot=[sp.get(s.replace("#door", ""), s) for s in use], stream_is_door=[s.endswith("#door") for s in use])

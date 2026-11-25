@@ -6,3 +6,6 @@ pyyaml
 tabulate
 requests
 lxml
+scipy
+scikit-learn
+torch

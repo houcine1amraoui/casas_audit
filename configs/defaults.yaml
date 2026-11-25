@@ -54,8 +54,43 @@ audit:
     max_days: 180             # cap per home (first 180 clean days), so long deployments do not dominate or drift for years
     min_clean_days: 56        # homes with fewer clean days are reported but left out of the tests
   n_bins: 6                   # 4-h bins for daily features
+  step_minutes: 10            # per-step activation counts cached for Stage E (cache/casas/steps/<home>.npz)
   std_floor: 0.05
   within: {ref_days: 28, late_days: 28, n_perm: 1000, seed: 0}
   ident: {profile_frac: 0.4, test_frac: 0.4}   # first 40% of good days = profile, last 40% = test (20% gap between)
   label_join_gap_s: 1800
   figures_per_home: true
+
+# ---------------- Stage E: preliminary models on the audited homes (run_stage_e)
+stage_e:
+  run_name: casas_stage_e
+  homes: null                 # null = every audited home with enough clean days; or a list, e.g. [tm008, ihs108]
+  force: false                # recompute results that already exist (runs/<home>/<model>_s<seed>.json)
+  window_steps: 12            # 2 h of 10-min steps as input
+  horizon_steps: 6            # forecast 1 h ahead
+  split: {train: 0.6, val: 0.15, test: 0.25}   # chronological over each home's clean days
+  std_floor: 0.25
+  models: [persistence, seasonal_naive, var, lstm, lstm_ae, gdn_nograph, gdn, gdn_hier, gdn_hier_random]
+  #        add gdn_hier_group, gdn_hier_group_random for the functional grouping (bedroom/bathroom/kitchen/living/transit/other)
+  seeds: [0, 1, 2]            # GDN family
+  seeds_other_trainable: [0]  # lstm, lstm_ae
+  hierarchy_level: room       # gdn_hier(_random): room ids (BedroomA, KitchenA, ...); gdn_hier_group(_random): room groups
+  residual: false             # all channels are event counts: no persistence residual
+  var_lambdas: [0.001, 0.01, 0.1, 1.0, 10.0]
+  hp: {hidden: 64, layers: 1, dropout: 0.0, latent: 32, emb_dim: 32, topk: 5}
+  train: {lr: 0.001, weight_decay: 0.0, batch_size: 256, max_epochs: 40, patience: 6, grad_clip: 1.0}
+  score:
+    channel_agg: [max, mean, top3]
+    smooth_steps: [1, 6, 12]
+    select: val_injected
+    default: [mean, 6]
+  score_scale_floor: 0.05
+  day_threshold_quantile: 0.95   # a day is flagged if its score exceeds the 95th percentile of the home's own val days
+  impostor: {days_per_home: 7, min_matched_share: 0.5, seed: 0}   # other homes' test days scored by this home's model
+  inject:
+    types: [night_activity, inactivity, routine_shift, room_swap]
+    n_per_type: 10
+    segment_hours: 2
+    gap_steps: 6
+    min_effect: 0.5
+    seed: 123

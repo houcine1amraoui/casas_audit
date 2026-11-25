@@ -104,8 +104,14 @@ def main(argv=None):
     S.to_csv(out / "sensor_audit.csv", index=False)
     D.to_csv(out / "home_days.csv", index=False)
     G.to_csv(out / "silences.csv", index=False)
+    step_dir = Path(cfg["paths"]["cache_dir"]) / "steps"
+    step_dir.mkdir(parents=True, exist_ok=True)
     for h in homes:
         r = res[h]
+        np.savez_compressed(step_dir / f"{h}.npz", X=r["Xstep"], step_minutes=r["step_minutes"],
+                            days=r["day_index"].values.astype("datetime64[D]").astype(np.int64), clean=r["active_mask"],
+                            streams=np.array(r["streams"]), room_type=np.array(r["stream_room_type"]), room=np.array(r["stream_room"]),
+                            group=np.array(r["stream_group"]), spot=np.array(r["stream_spot"]), is_door=np.array(r["stream_is_door"], bool))
         np.savez_compressed(feat_dir / f"{h}.npz", days=r["day_index"].values.astype("datetime64[D]").astype(np.int64),
                             active=r["active_mask"], Xs=r["Xs"], Xg_share=r["Xg_share"], Xh_share=r["Xh_share"],
                             log_total=r["log_total"], Xs_names=np.array(r["Xs_names"]))
