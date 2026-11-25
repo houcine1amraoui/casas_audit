@@ -30,7 +30,10 @@ sensor reports) and proposes tiers: `core_single` (one resident: the cross-user 
 `unknown_residents`, `excluded` (with the reason). Outputs in `outputs/casas_selection/`.
 
 ## Step 3: audit of the selected homes (`python -m run_audit --project_root_dir ROOT --dataset_folder DATA`)
-Reads each selected home's raw file (tiers in `audit.tiers`, default `core_single`) inside its stable window.
+Reads each selected home's raw file (tiers in `audit.tiers`, default `core_single`) inside its stable window, then finds a
+*clean sub-window* (longest run of days on which >= 90% of the home's core motion sensors fire, capped at 180 days).
+Integrity and sensor classes are reported for both; features and tests use only the clean days. Doors are not judged
+`stuck` (they can stay open); numeric sensors (temperatures) are not streams.
 1. Integrity: daily activations, event-free stretches >= 12 h and whether a door/entry event preceded them (absence)
    or not (likely outage), backwards timestamps, ignored message types.
 2. Sensors: ON/OFF pairing, ON durations, stuck sensors, dropouts on active days, rare/silent/chattering streams.

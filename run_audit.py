@@ -86,16 +86,19 @@ def main(argv=None):
         if p is None:
             log.warning("%s: data file not found, skipped", r.home)
             continue
-        jobs.append((r.home, p, r.win_start, r.win_end, SM[SM.home == r.home][["sensor", "room_type", "room", "spot"]], cfg))
+        sm = SM[SM.home == r.home].assign(binary=lambda d: d.has_motion.astype(bool) | d.has_door.astype(bool))
+        jobs.append((r.home, p, r.win_start, r.win_end, sm[["sensor", "room_type", "room", "spot", "binary"]], cfg))
     log.info("auditing %d homes (tiers %s)", len(jobs), A["tiers"])
     res = {}
     with ProcessPoolExecutor(max_workers=A["workers"] or os.cpu_count() or 2) as ex:
         for r in ex.map(_job, jobs):
             res[r["home"]] = r
-            log.info("  %-8s events=%-9d days=%-4d active=%-4d usable streams=%d/%d", r["home"], r["n_events"], len(r["days"]),
-                     int(r["active_mask"].sum()), len(r["streams"]), len(r["sensors"]))
+            log.info("  %-8s events=%-9d days=%-4d active=%-4d clean=%-4d usable streams=%d/%d", r["home"], r["n_events"], len(r["days"]),
+                     int(r["active_full"].sum()), int(r["active_mask"].sum()), len(r["streams"]), len(r["sensors"]))
     homes = sorted(res)
     S = pd.concat([res[h]["sensors"] for h in homes], ignore_index=True)
+    SF = pd.concat([res[h]["sensors_full"] for h in homes], ignore_index=True)
+    SF.to_csv(out / "sensor_audit_full_window.csv", index=False)
     D = pd.concat([res[h]["days"] for h in homes], ignore_index=True)
     G = pd.concat([res[h]["gaps"] for h in homes if len(res[h]["gaps"])], ignore_index=True) if any(len(res[h]["gaps"]) for h in homes) else pd.DataFrame()
     S.to_csv(out / "sensor_audit.csv", index=False)
@@ -112,7 +115,11 @@ def main(argv=None):
     for h in homes:
         r, s = res[h], res[h]["sensors"]
         gh = G[G.home == h] if len(G) else pd.DataFrame(columns=["hours", "door_or_entry_before"])
-        hs.append(dict(home=h, window_days=len(r["days"]), active_days=int(r["active_mask"].sum()),
+        ci = r["clean_info"]
+        cd = r["days"].day[r["active_mask"]]
+        hs.append(dict(home=h, window_days=len(r["days"]), active_days=int(r["active_full"].sum()), clean_days=ci["clean_days"],
+                       clean_first=cd.min().date() if len(cd) else None, clean_last=cd.max().date() if len(cd) else None,
+                       core_sensors=ci["core_streams"], enough_clean=ci["clean_days"] >= A["clean"]["min_clean_days"],
                        median_daily_activations=float(np.median(r["days"].activations[r["active_mask"]])) if r["active_mask"].any() else 0,
                        streams=len(s), usable=int(s.usable.sum()), **{f"cls_{k}": int(v) for k, v in s.cls.value_counts().items()},
                        silences=len(gh), silences_after_door=int(gh.door_or_entry_before.sum()) if len(gh) else 0,
@@ -122,9 +129,10 @@ def main(argv=None):
     HS.to_csv(out / "home_summary.csv", index=False)
 
     # ---------------- within-home consistency (sensor features and room-group features)
+    tested = [h for h in homes if res[h]["clean_info"]["clean_days"] >= A["clean"]["min_clean_days"]]
     W = A["within"]
     wrows = []
-    for h in homes:
+    for h in tested:
         r = res[h]
         m = r["active_mask"]
         for fs, X in (("sensors", r["Xs"]), ("room_groups", np.c_[r["Xg_share"], r["log_total"]])):
@@ -141,8 +149,8 @@ def main(argv=None):
              "time_and_room_groups": lambda r: np.c_[r["Xh_share"], r["Xg_share"], r["log_total"]]}
     ident_rows, ident_home, Dmats = [], [], {}
     for name, f in fsets.items():
-        F = {h: f(res[h])[res[h]["active_mask"]] for h in homes}
-        summ, R, Dm = consistency.identification(F, homes, cohort, A["std_floor"], I["profile_frac"], I["test_frac"])
+        F = {h: f(res[h])[res[h]["active_mask"]] for h in tested}
+        summ, R, Dm = consistency.identification(F, tested, cohort, A["std_floor"], I["profile_frac"], I["test_frac"])
         ident_rows.append(dict(features=name, **summ))
         ident_home.append(R.assign(features=name))
         Dmats[name] = Dm
@@ -183,19 +191,26 @@ def main(argv=None):
     w(f"{len(homes)} homes (tiers {A['tiers']}), whole days inside each home's stable window. Streams: motion ON/OFF and door "
       "OPEN/CLOSE; an activation = ON or OPEN. Other messages (temperatures, 0/100, button taps) are counted and ignored.\n")
     w("## 1. Integrity\n")
-    w(md(HS[["home", "window_days", "active_days", "median_daily_activations", "silences", "silences_after_door", "silence_hours",
-             "backwards", "ignored_messages"]]))
+    w(md(HS[["home", "window_days", "active_days", "clean_days", "clean_first", "clean_last", "core_sensors", "median_daily_activations",
+             "silences", "silences_after_door", "silence_hours", "backwards", "ignored_messages"]]))
+    cl = A["clean"]
+    w(f"`clean_days`: longest run (bad stretches <= {cl['gap_tolerance']} days bridged, not used) of active days on which >= "
+      f"{cl['min_alive_share']:.0%} of the home's core motion sensors fire, capped at the first {cl['max_days']} such days. Features and "
+      f"tests use only these days. {int((~HS.enough_clean).sum())} homes have < {cl['min_clean_days']} clean days and are left out of "
+      f"sections 3-4: {', '.join(HS.home[~HS.enough_clean]) or 'none'}.\n")
     w(f"Silences = event-free stretches >= {A['silence_hours']} h; `silences_after_door` = preceded by a door or entry event "
       "(likely the resident away) rather than a system outage.\n")
     w("## 2. Sensors\n")
-    w(md(S.groupby("cls").agg(streams=("stream", "size"), homes=("home", "nunique")).reset_index().sort_values("streams", ascending=False)))
+    w("Sensor classes over the whole stable window vs inside the clean sub-window:\n\n")
+    w(md(pd.concat([SF.cls.value_counts().rename("full_window"), S.cls.value_counts().rename("clean_window")], axis=1).fillna(0).astype(int)
+         .rename_axis("cls").reset_index()))
     w(f"Classes: `silent_in_window` (no activation in the window), `rare` (median < {A['classify']['rare_median_daily']}/day, kept), "
       f"`stuck` (ON held >= {A['stuck_hours']} h for > {A['classify']['stuck_time_share']:.0%} of the time), `long_dropout` "
       f"(silent >= {A['classify']['dropout_run_days']} active days in a row), `intermittent` (silent on > {A['classify']['dropout_share']:.0%} "
       "of active days), `chatter`. Usable = ok + rare.\n\n")
-    bad = S[~S.usable].sort_values(["home", "cls"])[["home", "stream", "room_type", "cls", "activations", "median_daily",
+    bad = S[~S.usable].sort_values(["home", "cls"])[["home", "stream", "room_type", "cls", "cls_full_window", "activations", "median_daily",
                                                       "longest_dropout_run", "stuck_time_share", "unpaired_on_share"]]
-    w("Not usable:\n\n" + md(bad))
+    w("Not usable inside the clean window (excluded from features):\n\n" + md(bad))
     w("ON-duration and pairing (usable motion streams): median ON " +
       f"{S[S.usable & ~S.is_door.astype(bool)].median_on_s.median():.1f} s; unpaired ON share median "
       f"{S[S.usable].unpaired_on_share.median():.3f}.\n")
@@ -212,7 +227,8 @@ def main(argv=None):
       "(hourly shares of activations + daily volume), so layout cannot drive it; `room_groups` uses six room groups x six "
       "4-h bins (shares) present in every home.\n\n")
     w(md(IT))
-    w("`top1_within_cohort` = identification among homes of the same deployment (e.g. all `tm`), which removes era and "
+    w("`top1`/`top1_within_cohort` pool all test days (long homes weigh more); `macro_*` average homes equally. "
+      "`top1_within_cohort` = identification among homes of the same deployment (e.g. all `tm`), which removes era and "
       "installation differences between deployments.\n")
     w("## 5. Labels\n")
     if len(LS):

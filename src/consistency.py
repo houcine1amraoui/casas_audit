@@ -78,6 +78,7 @@ def identification(F, homes, cohort, floor, profile_frac=0.5, test_frac=0.5):
     summ = dict(homes=len(homes), test_days=int(len(allr)), top1=float((allr == 1).mean()), top5=float((allr <= 5).mean()),
                 chance_top1=1 / len(homes), mrr=float((1 / allr).mean()), auroc_own_vs_other=float(np.mean(aucs)),
                 top1_within_cohort=float(np.average(R.top1_within_cohort, weights=R.test_days)),
+                macro_top1=float(R.top1.mean()), macro_top1_within_cohort=float(R.top1_within_cohort.mean()),
                 chance_within_cohort=float(np.average(1 / R.cohort_size, weights=R.test_days)))
     Dc = masked_rms(C, C)
     return summ, R, pd.DataFrame(Dc, index=homes, columns=homes)
