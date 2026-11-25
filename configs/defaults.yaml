@@ -23,14 +23,33 @@ zenodo:
   verify_md5: true
 
 inventory:
+  parts: [data, labeled, floorplans]   # e.g. [labeled, floorplans] to add those to an existing data inventory
   workers: 0                  # 0 = number of CPUs
   max_bad_examples: 5         # unparsable lines kept per home
   gap_hours: [1, 6, 24, 72]   # event-free gaps counted per home
   active_day_min_events: 50   # a day with fewer events counts as inactive (sensor or home down)
   top_messages: 8
 
-selection:                    # candidate rule (proposal only; nothing is dropped at this stage)
-  min_active_days: 56         # 8 weeks
+selection:                    # proposal rules (step 1 marks candidates; step 2 run_select builds the cohort)
+  min_active_days: 56         # step 1: 8 weeks
   min_run_days: 28            # longest run of consecutive active days
   min_sensors: 10
-  min_rooms_with_2plus: 3     # rooms with >= 2 sensors (room = name with Area / trailing letter / suffix removed)
+  min_rooms_with_2plus: 3     # step 2: rooms (type + letter) with >= 2 motion sensors
+  core_cover: 0.8             # step 2: core sensor = in-room motion sensor covering >= 80% of the home's span
+  min_window_active_days: 56  # step 2: active days inside the stable window
+
+# ---------------- step 3: audit of the selected homes (run_audit)
+audit:
+  run_name: casas_audit
+  tiers: [core_single]        # homes_selection.csv tiers to audit
+  workers: 0                  # 0 = number of CPUs
+  silence_hours: 12           # event-free stretches reported (absence if a door/entry event precedes it)
+  stuck_hours: 2              # motion ON held this long = stuck cycle
+  dropout_min_median: 5       # a sensor-day counts as dropout if the sensor is silent on an active day but usually fires >= 5/day
+  classify: {rare_median_daily: 1, stuck_time_share: 0.05, dropout_run_days: 7, dropout_share: 0.2, chatter_daily: 20000}
+  n_bins: 6                   # 4-h bins for daily features
+  std_floor: 0.05
+  within: {ref_days: 28, late_days: 28, n_perm: 1000, seed: 0}
+  ident: {profile_frac: 0.4, test_frac: 0.4}   # first 40% of good days = profile, last 40% = test (20% gap between)
+  label_join_gap_s: 1800
+  figures_per_home: true

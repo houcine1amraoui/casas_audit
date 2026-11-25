@@ -69,7 +69,14 @@ def locate(cfg):
     root = Path(cfg["dataset_folder"])
     if mode in ("auto", "folders"):
         f = cfg["folders"]
-        dirs = {k: find_dir(root, f[k]) for k in ("data", "labeled", "floorplans")}
+        dirs = {}
+        for k in ("data", "labeled", "floorplans"):
+            d = find_dir(root, f[k])
+            if d is None and root.name.lower() == f[k].lower():
+                d = root
+            if d is None:          # DATASET_FOLDER may point at data/ itself: look beside it
+                d = find_dir(root.parent, f[k], depth=1)
+            dirs[k] = d
         if dirs["data"] is not None:
             log.info("using unzipped folders (no download): %s", ", ".join(f"{k}={v}" for k, v in dirs.items()))
             download.fetch_metadata(cfg)
@@ -107,19 +114,31 @@ def main(argv=None):
     files = locate(cfg)
     desc = describe_record(Path(cfg["dataset_folder"]) / f"zenodo_{cfg['zenodo']['record']}.json", out)
 
-    H, S, D, G, other = inventory.run(files["data.zip"], cfg, "data")
-    H = candidates(H, cfg)
-    H.to_csv(out / "homes.csv", index=False)
-    S.to_csv(out / "sensors.csv", index=False)
-    D.to_csv(out / "days.csv.gz", index=False)
-    G.to_csv(out / "gaps.csv", index=False)
+    parts = cfg["inventory"]["parts"]
+    if "data" in parts:
+        H, S, D, G, other = inventory.run(files["data.zip"], cfg, "data")
+        H = candidates(H, cfg)
+        H.to_csv(out / "homes.csv", index=False)
+        S.to_csv(out / "sensors.csv", index=False)
+        D.to_csv(out / "days.csv.gz", index=False)
+        G.to_csv(out / "gaps.csv", index=False)
+    else:                                 # reuse the data inventory already in the output folder
+        log.info("inventory.parts has no 'data': reusing %s/homes.csv etc.", out)
+        H = candidates(pd.read_csv(out / "homes.csv"), cfg)
+        S = pd.read_csv(out / "sensors.csv")
+        other = []
 
     LH = LS = None
-    if "labeled_data.zip" in files:
+    if "labeled" in parts and "labeled_data.zip" in files:
         LH, LS, LD, LG, _ = inventory.run(files["labeled_data.zip"], cfg, "labeled")
         LH.to_csv(out / "labeled_homes.csv", index=False)
         LS.to_csv(out / "labeled_sensors.csv", index=False)
-    FP = inventory.list_zip(files["floorplans.zip"]) if "floorplans.zip" in files else pd.DataFrame(columns=["name", "bytes"])
+    elif (out / "labeled_homes.csv").exists():
+        LH = pd.read_csv(out / "labeled_homes.csv")
+    if "floorplans" in parts or not (out / "floorplans.csv").exists():
+        FP = inventory.list_zip(files["floorplans.zip"]) if "floorplans.zip" in files else pd.DataFrame(columns=["name", "bytes"])
+    else:
+        FP = pd.read_csv(out / "floorplans.csv")
     FP["home_guess"] = FP.name.map(lambda n: inventory.home_id(n).split(".")[0])
     FP.to_csv(out / "floorplans.csv", index=False)
 
@@ -135,8 +154,10 @@ def main(argv=None):
     if other:
         w("Non-data files in data.zip: " + ", ".join(f"`{o}`" for o in other[:30]) + "\n")
     w("## Line layout and fields\n")
-    w(md(H.groupby("layout").size().reset_index(name="homes").sort_values("homes", ascending=False)))
-    w("Extra fields after the message (per home, `n_extra:lines`), first homes:\n\n" + md(H[["home", "extra_fields", "top_extra"]], 15))
+    lay = H.layout.astype(str).str.replace(r":\d+", "", regex=True)
+    w(md(lay.value_counts().rename_axis("layout").reset_index(name="homes")))
+    ex = H[H.extra_fields.astype(str) != H.extra_fields.astype(str).str.extract(r"^(0:\d+)$")[0].fillna("#")]
+    w(f"Homes with extra fields after the message: {len(ex)}.\n\n" + md(ex[["home", "extra_fields", "top_extra"]], 15))
     w("## Coverage\n")
     w(md(H[["span_days", "active_days", "longest_active_run", "n_sensors", "median_events_per_active_day"]].describe().T.reset_index(), fmt=".1f"))
     w("## Sensor kinds (from message vocabulary)\n")
