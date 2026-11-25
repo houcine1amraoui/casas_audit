@@ -22,7 +22,7 @@ from src.config import load_config
 from src.stage_e import data, evaluate, train
 
 log = logging.getLogger("ca")
-ORDER = ["persistence", "seasonal_naive", "var", "lstm", "lstm_ae", "gdn_nograph", "gdn", "gdn_hier", "gdn_hier_random",
+ORDER = ["persistence", "seasonal_naive", "var", "lstm", "lstm_ae", "hae", "hae_random", "hae_flat", "gdn_nograph", "gdn", "gdn_hier", "gdn_hier_random",
          "gdn_hier_group", "gdn_hier_group_random"]
 
 
@@ -76,13 +76,14 @@ def report(rows, ds, cfg, out):
     e = cfg["stage_e"]
     R = pd.DataFrame(rows)
     R = R[R.model.isin(e["models"])]
-    R.drop(columns=[c for c in ("graph_edges", "cross_user_auroc_by_impostor") if c in R]).to_csv(out / "runs.csv", index=False)
+    R.drop(columns=[c for c in ("graph_edges", "cross_user_auroc_by_impostor", "val_inj_grid") if c in R]).to_csv(out / "runs.csv", index=False)
     # per-home skill vs persistence
     pers = R[R.model == "persistence"].set_index("home").test_mse
     R["skill_vs_persistence"] = 1 - R.test_mse / R.home.map(pers)
     H = R.groupby(["home", "model"]).mean(numeric_only=True).reset_index()             # seeds averaged within a home
     inj_cols = [c for c in R.columns if c.startswith("inj_") and c.endswith("_auroc")]
-    cols = ["test_mse", "skill_vs_persistence", "cross_user_day_auroc", "own_test_day_flag_rate", "impostor_day_flag_rate"] + inj_cols
+    cols = ["test_mse", "skill_vs_persistence", "cross_user_day_auroc", "own_test_day_flag_rate", "impostor_day_flag_rate",
+            "inj_mean_auroc_none", "inj_mean_auroc_hour"] + inj_cols
     rng = np.random.default_rng(0)
     summ = []
     for mname, d in H.groupby("model"):
@@ -109,7 +110,9 @@ def report(rows, ds, cfg, out):
     piv = H.pivot_table(index="home", columns="model", values="cross_user_day_auroc")
     piv = piv[[m for m in ORDER if m in piv.columns]]
     piv.to_csv(out / "cross_user_auroc_by_home.csv")
-    chosen = R.groupby(["score_agg", "score_smooth"]).size().reset_index(name="runs")
+    if "score_calibration" not in R:
+        R["score_calibration"] = "none"
+    chosen = R.groupby(["score_agg", "score_smooth", "score_calibration"]).size().reset_index(name="runs")
 
     # ---- figures
     figs = []
@@ -165,11 +168,17 @@ def report(rows, ds, cfg, out):
       "(about 5% of own days expected without drift).\n")
     w("## 2. Injected anomalies (test split, AUROC)\n")
     w(md(S[["model"] + inj_cols]))
-    w("Score settings chosen on val-injected anomalies: " + ", ".join(f"{r.score_agg}/k{r.score_smooth}: {r.runs}" for r in chosen.itertuples()) + ".\n")
+    w("Score settings chosen on val-injected anomalies (aggregation/smoothing/calibration: runs): "
+      + ", ".join(f"{r.score_agg}/k{r.score_smooth}/{r.score_calibration}: {r.runs}" for r in chosen.itertuples()) + ".\n")
+    if "inj_mean_auroc_hour" in S:
+        w("Effect of hour-of-day calibration on injected anomalies (test, mean AUROC; each column uses the best "
+          "aggregation and smoothing chosen on val for that calibration):\n\n" + md(S[["model", "inj_mean_auroc_none", "inj_mean_auroc_hour"]]))
     w("## 3. Flat vs hierarchical and other paired comparisons (per home, Wilcoxon over homes)\n")
     w("Difference = first model - second model; MSE: negative is better, AUROC: positive is better. `better` = homes where the "
       "first model is better. The hierarchy question is answered by `gdn_hier - gdn` (does the fixed room hierarchy add to the "
-      "flat learned graph) and `gdn_hier - gdn_hier_random` (does the RIGHT grouping matter, at equal capacity).\n\n")
+      "flat learned graph) and `gdn_hier - gdn_hier_random` (does the RIGHT grouping matter, at equal capacity); for the "
+      "autoencoders `hae - hae_random` (right rooms vs random rooms, same sizes) and `hae - hae_flat` (room codes vs one "
+      "shared code of the same total size).\n\n")
     show = ["comparison", "homes"] + [c for c in P.columns if c.startswith("cross_user") or c.startswith("inj_room_swap") or c.startswith("test_mse")]
     w(md(P[[c for c in show if c in P]]))
     w("Same for mean injected AUROC:\n\n" + md(P[["comparison"] + [c for c in P.columns if c.startswith("inj_mean")]]))

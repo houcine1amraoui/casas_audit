@@ -48,10 +48,12 @@ absence, an outage, a routine shift, a duplicate home and both label styles.
 ## Step 4: Stage E, per-home models with cross-user deviation (`python -m run_stage_e --project_root_dir ROOT`)
 Needs the step cache written by run_audit (`cache/casas/steps/<home>.npz`). For each home with enough clean days:
 10-min activation counts per usable sensor, chronological split of clean days (train 60% / val 15% / test 25%),
-models persistence, seasonal naive, ridge VAR, LSTM, LSTM autoencoder, GDN without graph, GDN, GDN + room hierarchy,
-GDN + randomly assigned rooms (optionally the room-group hierarchy and its control). Score settings are chosen on
-anomalies injected into val. Evaluation on held-out data: forecast error, injected anomalies in test, and the cross-user
+models persistence, seasonal naive, ridge VAR, LSTM, LSTM autoencoder, hierarchical autoencoder (HAE: sensor -> room ->
+home codes; controls `hae_random` with sensors assigned to random rooms of the same sizes and `hae_flat` with a single
+room of the same total code size), GDN without graph, GDN, GDN + room hierarchy, GDN + randomly assigned rooms. Score
+settings (channel aggregation, smoothing, and calibration `none` or `hour` = scores standardised per 2-hour bin of the
+day using clean val windows) are chosen on anomalies injected into val. Evaluation on held-out data: forecast error, injected anomalies in test, and the cross-user
 test: the home's model scores its own test days and other homes' test days mapped onto its sensors by name; AUROC per
 home. Flat vs hierarchical is compared per home (seeds averaged) with bootstrap CIs and Wilcoxon tests over homes.
-Results are saved per (home, model, seed) under `outputs/casas_stage_e/runs/`, so a run can be stopped and resumed, or
+Results are saved per (home, model, seed) under `outputs/<run_name>/runs/` (v2 run: `outputs/casas_stage_e_v2/`; v1 results stay in `outputs/casas_stage_e/`), so a run can be stopped and resumed, or
 split with `--set "stage_e.homes=[...]"`; `--report_only` rebuilds the report. `--quick` = smoke test.

@@ -119,4 +119,5 @@ def impostor_arrays(target, source, cfg, rng):
     a = make_arrays(Zs, obs, source["cov"], idx, target["w"], target["h"])
     a["Zsrc"] = Zs
     a["day"] = source["times"][idx].normalize().values
+    a["hour"] = source["times"][idx].hour.values
     return a, float((m >= 0).mean())

@@ -24,7 +24,32 @@ log = logging.getLogger("ca")
 
 
 def trainable(name):
-    return name in ("lstm", "lstm_ae") or name.startswith("gdn")
+    return name in ("lstm", "lstm_ae") or name.startswith("gdn") or name.startswith("hae")
+
+
+def calib_stats(s, hours, bin_h):
+    """Per time-of-day bin: median and robust scale (IQR, floored) of clean VAL window scores."""
+    b = hours // bin_h
+    st = {}
+    for k in np.unique(b):
+        v = s[(b == k) & np.isfinite(s)]
+        if len(v) >= 5:
+            q1, q2, q3 = np.quantile(v, [.25, .5, .75])
+            st[int(k)] = (q2, max(q3 - q1, 1e-3))
+    return st
+
+
+def calibrate(s, hours, st, bin_h):
+    """Score relative to what is usual for this time of day (val), so that night-like activity in the day or
+    day-like activity at night stands out. Bins without val statistics keep the raw score shifted by the global median."""
+    if not st:
+        return s
+    b = hours // bin_h
+    med = np.array([st.get(int(k), (np.nan, np.nan))[0] for k in b])
+    sc = np.array([st.get(int(k), (np.nan, np.nan))[1] for k in b])
+    gm, gs = np.median([v[0] for v in st.values()]), np.median([v[1] for v in st.values()])
+    med, sc = np.where(np.isnan(med), gm, med), np.where(np.isnan(sc), gs, sc)
+    return (s - med) / sc
 
 
 def _auc(y, s):
@@ -78,11 +103,13 @@ def run_home(target, others, cfg, out_dir):
         cover[o["home"]] = share
         if a is not None:
             imps[o["home"]] = a
-    combos = [(g, int(k)) for g in e["score"]["channel_agg"] for k in e["score"]["smooth_steps"]]
+    combos = [(g, int(k), cal) for g in e["score"]["channel_agg"] for k in e["score"]["smooth_steps"] for cal in e["score"]["calibration"]]
+    bin_h = int(e["score"]["calibration_bin_hours"])
+    hrs = {s: target["times"][arr[s]["t"]].hour.values for s in ("val", "test")}
     rows = []
     graphs = {}
     for name in e["models"]:
-        seeds = (e["seeds"] if name.startswith("gdn") else e["seeds_other_trainable"]) if trainable(name) else [0]
+        seeds = (e["seeds"] if name.startswith(("gdn", "hae")) else e["seeds_other_trainable"]) if trainable(name) else [0]
         for seed in seeds:
             f = hdir / f"{name}_s{seed}.json"
             if f.exists() and not e["force"]:
@@ -107,32 +134,49 @@ def run_home(target, others, cfg, out_dir):
                   for tag, inj in (("val", inj_val), ("test", inj_test)) for typ, (a, _) in inj.items()}
             Zimp = {oh: train.score(train.errors(m, a, target)[0], med, iqr)[1] for oh, a in imps.items()}
 
-            def S(Zm, t, g, k):
-                return train.smooth(train.aggregate(Zm, g), t, k)
+            cstats = {}
 
-            def inj_auc(inj, tag, g, k):
+            def S(Zm, t, g, k, cal="none", hours=None):
+                s = train.smooth(train.aggregate(Zm, g), t, k)
+                if cal == "hour":
+                    if (g, k) not in cstats:       # fitted on the clean val windows of this model, aggregation and smoothing
+                        cstats[(g, k)] = calib_stats(train.smooth(train.aggregate(Zv, g), arr["val"]["t"], k), hrs["val"], bin_h)
+                    s = calibrate(s, hours, cstats[(g, k)], bin_h)
+                return s
+
+            def inj_auc(inj, tag, g, k, cal):
                 v = []
                 for typ, (a, segs) in inj.items():
                     lab = inject.labels_for(a["t"], segs, h + w - 1 + k - 1)
                     keep = lab >= 0
-                    v.append(_auc(lab[keep] == 1, S(Zi[(tag, typ)], a["t"], g, k)[keep]))
+                    v.append(_auc(lab[keep] == 1, S(Zi[(tag, typ)], a["t"], g, k, cal, target["times"][a["t"]].hour.values)[keep]))
                 return v
 
             best = None
-            for g, k in combos:
-                v = np.nanmean(inj_auc(inj_val, "val", g, k)) if inj_val else np.nan
-                key = v if e["score"]["select"] == "val_injected" else float([g, k] == list(e["score"]["default"]))
+            grid = {}
+            for g, k, cal in combos:
+                v = np.nanmean(inj_auc(inj_val, "val", g, k, cal)) if inj_val else np.nan
+                grid[f"{g}/k{k}/{cal}"] = float(v)
+                key = v if e["score"]["select"] == "val_injected" else float([g, k, cal] == list(e["score"]["default"]))
                 if best is None or np.nan_to_num(key, nan=-1) > best[0] + 1e-9:
-                    best = (np.nan_to_num(key, nan=-1), g, k)
-            _, g, k = best
-            r["score_agg"], r["score_smooth"] = g, k
-            for typ, v in zip(inj_test, inj_auc(inj_test, "test", g, k)):
+                    best = (np.nan_to_num(key, nan=-1), g, k, cal)
+            _, g, k, cal = best
+            r["score_agg"], r["score_smooth"], r["score_calibration"] = g, k, cal
+            r["val_inj_grid"] = grid
+            # the same model with the uncalibrated / hour-calibrated score, each with its own best agg+smoothing on val
+            for c_ in e["score"]["calibration"]:
+                sub = [(kk, vv) for kk, vv in grid.items() if kk.endswith("/" + c_)]
+                if sub:
+                    bk = max(sub, key=lambda x: np.nan_to_num(x[1], nan=-1))[0].split("/")
+                    gg, kk_ = bk[0], int(bk[1][1:])
+                    r[f"inj_mean_auroc_{c_}"] = float(np.nanmean(inj_auc(inj_test, "test", gg, kk_, c_))) if inj_test else np.nan
+            for typ, v in zip(inj_test, inj_auc(inj_test, "test", g, k, cal)):
                 r[f"inj_{typ}_auroc"] = v
             r["inj_mean_auroc"] = float(np.nanmean([r[f"inj_{t}_auroc"] for t in inj_test])) if inj_test else np.nan
             # cross-user: day scores
-            dv = day_scores(S(Zv, arr["val"]["t"], g, k), target["times"][arr["val"]["t"]].normalize())
-            dt = day_scores(S(Zt, arr["test"]["t"], g, k), target["times"][arr["test"]["t"]].normalize())
-            di = [day_scores(S(Zimp[oh], a["t"], g, k), a["day"]) for oh, a in imps.items()]
+            dv = day_scores(S(Zv, arr["val"]["t"], g, k, cal, hrs["val"]), target["times"][arr["val"]["t"]].normalize())
+            dt = day_scores(S(Zt, arr["test"]["t"], g, k, cal, hrs["test"]), target["times"][arr["test"]["t"]].normalize())
+            di = [day_scores(S(Zimp[oh], a["t"], g, k, cal, a["hour"]), a["day"]) for oh, a in imps.items()]
             di = pd.concat(di) if di else pd.Series(dtype=float)
             r["impostor_homes"], r["impostor_days"] = len(imps), int(len(di))
             r["impostor_matched_share_mean"] = float(np.mean([cover[o] for o in imps])) if imps else np.nan
@@ -141,7 +185,7 @@ def run_home(target, others, cfg, out_dir):
             r["own_test_day_flag_rate"] = float((dt.values > thr).mean()) if len(dt) else np.nan
             r["impostor_day_flag_rate"] = float((di.values > thr).mean()) if len(di) else np.nan
             per_imp = {oh: _auc(np.r_[np.zeros(len(dt)), np.ones(len(d))], np.r_[dt.values, d.values])
-                       for oh, d in zip(imps, [day_scores(S(Zimp[oh], a["t"], g, k), a["day"]) for oh, a in imps.items()])}
+                       for oh, d in zip(imps, [day_scores(S(Zimp[oh], a["t"], g, k, cal, a["hour"]), a["day"]) for oh, a in imps.items()])}
             r["cross_user_auroc_by_impostor"] = per_imp
             if isinstance(m, models.GDN) and m.graph == "learned":
                 A = m.neighbours()
@@ -149,9 +193,9 @@ def run_home(target, others, cfg, out_dir):
                 r["graph_edges"] = A.astype(int).tolist()
             f.write_text(json.dumps(r, default=float))
             rows.append(r)
-            log.info("  %-7s %-16s s%d mse val/test %.3f/%.3f inj %.3f cross-user %.3f (%d impostor homes) %s/k%d %.0fs",
-                     home, name, seed, r["val_mse"], r["test_mse"], r["inj_mean_auroc"], r["cross_user_day_auroc"],
-                     len(imps), g, k, r["train_s"])
+            log.info("  %-7s %-16s s%d mse val/test %.3f/%.3f inj %.3f (none %.3f, hour %.3f) cross-user %.3f (%d homes) %s/k%d/%s %.0fs",
+                     home, name, seed, r["val_mse"], r["test_mse"], r["inj_mean_auroc"], r.get("inj_mean_auroc_none", np.nan),
+                     r.get("inj_mean_auroc_hour", np.nan), r["cross_user_day_auroc"], len(imps), g, k, cal, r["train_s"])
     return rows
 
 
@@ -166,7 +210,8 @@ def seed_jaccard(rows):
     return pd.DataFrame(out)
 
 
-PAIRS = [("gdn", "gdn_nograph"), ("gdn_hier", "gdn"), ("gdn_hier", "gdn_hier_random"),
+PAIRS = [("hae", "hae_random"), ("hae", "hae_flat"), ("hae", "lstm_ae"),
+         ("gdn", "gdn_nograph"), ("gdn_hier", "gdn"), ("gdn_hier", "gdn_hier_random"),
          ("gdn_hier_group", "gdn"), ("gdn_hier_group", "gdn_hier_group_random"), ("gdn_hier", "lstm"), ("gdn", "var")]
 METRICS = ("cross_user_day_auroc", "inj_mean_auroc", "inj_room_swap_auroc", "test_mse")
 

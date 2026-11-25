@@ -63,27 +63,30 @@ audit:
 
 # ---------------- Stage E: preliminary models on the audited homes (run_stage_e)
 stage_e:
-  run_name: casas_stage_e
+  run_name: casas_stage_e_v2   # v2: hour-of-day score calibration + hierarchical autoencoder (v1 results stay in casas_stage_e)
   homes: null                 # null = every audited home with enough clean days; or a list, e.g. [tm008, ihs108]
   force: false                # recompute results that already exist (runs/<home>/<model>_s<seed>.json)
   window_steps: 12            # 2 h of 10-min steps as input
   horizon_steps: 6            # forecast 1 h ahead
   split: {train: 0.6, val: 0.15, test: 0.25}   # chronological over each home's clean days
   std_floor: 0.25
-  models: [persistence, seasonal_naive, var, lstm, lstm_ae, gdn_nograph, gdn, gdn_hier, gdn_hier_random]
+  models: [persistence, seasonal_naive, var, lstm, lstm_ae, hae, hae_random, hae_flat, gdn_nograph, gdn, gdn_hier, gdn_hier_random]
   #        add gdn_hier_group, gdn_hier_group_random for the functional grouping (bedroom/bathroom/kitchen/living/transit/other)
-  seeds: [0, 1, 2]            # GDN family
+  seeds: [0, 1, 2]            # GDN and HAE families
   seeds_other_trainable: [0]  # lstm, lstm_ae
   hierarchy_level: room       # gdn_hier(_random): room ids (BedroomA, KitchenA, ...); gdn_hier_group(_random): room groups
   residual: false             # all channels are event counts: no persistence residual
   var_lambdas: [0.001, 0.01, 0.1, 1.0, 10.0]
-  hp: {hidden: 64, layers: 1, dropout: 0.0, latent: 32, emb_dim: 32, topk: 5}
+  hp: {hidden: 64, layers: 1, dropout: 0.0, latent: 32, emb_dim: 32, topk: 5, room_dim: 8}
+  #   hae: home code = latent (32), one room code of room_dim (8) per room; hae_flat: one shared code of room_dim x n_rooms
   train: {lr: 0.001, weight_decay: 0.0, batch_size: 256, max_epochs: 40, patience: 6, grad_clip: 1.0}
   score:
     channel_agg: [max, mean, top3]
     smooth_steps: [1, 6, 12]
+    calibration: [none, hour]   # hour: window score relative to the val windows of the same time of day
+    calibration_bin_hours: 2
     select: val_injected
-    default: [mean, 6]
+    default: [mean, 6, hour]
   score_scale_floor: 0.05
   day_threshold_quantile: 0.95   # a day is flagged if its score exceeds the 95th percentile of the home's own val days
   impostor: {days_per_home: 7, min_matched_share: 0.5, seed: 0}   # other homes' test days scored by this home's model
