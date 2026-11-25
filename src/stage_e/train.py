@@ -125,6 +125,8 @@ def aggregate(Zs, how):
 def smooth(s, t, k):
     """Causal rolling mean of the last k window scores, restarted wherever target steps are not consecutive."""
     s = pd.Series(np.where(np.isfinite(s), s, np.nan))
+    if len(s) == 0:
+        return s.values
     if k <= 1:
         return s.fillna(s.min() if s.notna().any() else 0).values
     blk = np.r_[0, np.cumsum(np.diff(t) != 1)]

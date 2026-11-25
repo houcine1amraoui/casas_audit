@@ -109,11 +109,13 @@ def impostor_arrays(target, source, cfg, rng):
     idx = source["widx"]["test"]
     if not len(idx):
         return None, float((m >= 0).mean())
-    tdays = source["times"][idx].normalize()
-    ud = np.array(sorted(set(tdays)))
+    tdays = source["times"][idx].normalize().values.astype("datetime64[D]").astype(np.int64)   # day numbers
+    ud = np.unique(tdays)
     nmax = cfg["stage_e"]["impostor"]["days_per_home"]
-    pick = set(rng.choice(ud, size=min(nmax, len(ud)), replace=False)) if len(ud) else set()
-    idx = idx[np.isin(tdays, list(pick))]
+    pick = rng.choice(ud, size=min(nmax, len(ud)), replace=False)
+    idx = idx[np.isin(tdays, pick)]
+    if not len(idx):
+        return None, float((m >= 0).mean())
     a = make_arrays(Zs, obs, source["cov"], idx, target["w"], target["h"])
     a["Zsrc"] = Zs
     a["day"] = source["times"][idx].normalize().values
